@@ -1075,7 +1075,7 @@
 				};
 			};
 
-			i2c@701000 {
+			i2c0: i2c@701000 {
 				compatible = "marvell,mv78230-i2c";
 				reg = <0x701000 0x20>;
 				#address-cells = <0x01>;
@@ -1160,7 +1160,7 @@
 				};
 			};
 
-			serial@702000 {
+			cp0_uart0: serial@702000 {
 				compatible = "snps,dw-apb-uart";
 				reg = <0x702000 0x100>;
 				reg-shift = <0x02>;
@@ -1979,4 +1979,27 @@
 			phys = <0x52 0x02>;
 		};
 	};
+};
+
+&cp0_uart0 {
+    status = "okay";
+    mcu {
+        compatible = "qnap,ts435xeu-mcu";
+
+        pwm: pwm-0 {
+            #cooling-cells = <2>;
+            cooling-levels = <0 64 89 128 166 204 221 238>;
+        };
+    };
+};
+
+&i2c0 {
+    mcu@18 {
+        compatible = "qnap,ts435xeu-mcu";
+	status = "okay";
+	reg = <0x18>;
+
+	sata-drives = <0 1 2 3>;
+	m2-drives = <4 5>;
+    };
 };
