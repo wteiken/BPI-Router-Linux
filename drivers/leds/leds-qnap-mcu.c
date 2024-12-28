@@ -12,6 +12,8 @@
 #include <linux/slab.h>
 #include <uapi/linux/uleds.h>
 
+struct qnap_mcu_led_data;
+
 enum qnap_mcu_err_led_mode {
 	QNAP_MCU_ERR_LED_ON = 0,
 	QNAP_MCU_ERR_LED_OFF = 1,
@@ -20,11 +22,50 @@ enum qnap_mcu_err_led_mode {
 };
 
 struct qnap_mcu_err_led {
-	struct qnap_mcu *mcu;
+	struct qnap_mcu_led_data* data;
 	struct led_classdev cdev;
 	char name[LED_MAX_NAME_SIZE];
 	u8 num;
 	u8 mode;
+};
+
+enum qnap_mcu_usb_led_mode {
+	QNAP_MCU_USB_LED_ON = 0,
+	QNAP_MCU_USB_LED_OFF = 2,
+	QNAP_MCU_USB_LED_BLINK = 1,
+};
+
+struct qnap_mcu_usb_led {
+	struct qnap_mcu_led_data* data;
+	struct led_classdev cdev;
+	u8 mode;
+};
+
+/* representing the different colors as separate leds */
+enum qnap_mcu_info_led_index {
+	QNAP_MCU_INFO_LED_GREEN = 0,
+	QNAP_MCU_INFO_LED_RED = 1,
+	QNAP_MCU_INFO_LED_COLORS = 2,
+};
+
+/* ignoring the hardware blink capabilities */
+enum qnap_mcu_info_led_mode {
+	QNAP_MCU_INFO_LED_OFF = 0,
+	QNAP_MCU_INFO_LED_ON = 1,
+};
+
+struct qnap_mcu_info_led {
+	struct qnap_mcu_led_data* data;
+	struct led_classdev cdev;
+	u8 mode;
+};
+
+struct qnap_mcu_led_data {
+  struct qnap_mcu *mcu;
+  struct qnap_mcu_err_led* err_leds[QNAP_MCU_MAX_SATA_DRIVES];
+  int num_err_leds;
+  struct qnap_mcu_usb_led* usb_led;
+  struct qnap_mcu_info_led* info_leds[QNAP_MCU_INFO_LED_COLORS];
 };
 
 static inline struct qnap_mcu_err_led *
@@ -46,7 +87,7 @@ static int qnap_mcu_err_led_set(struct led_classdev *led_cdev,
 	err_led->mode = brightness ? QNAP_MCU_ERR_LED_ON : QNAP_MCU_ERR_LED_OFF;
 	cmd[3] = '0' + err_led->mode;
 
-	return qnap_mcu_exec_with_ack(err_led->mcu, cmd, sizeof(cmd));
+	return qnap_mcu_exec_with_ack(err_led->data->mcu, cmd, sizeof(cmd));
 }
 
 static int qnap_mcu_err_led_blink_set(struct led_classdev *led_cdev,
@@ -72,10 +113,10 @@ static int qnap_mcu_err_led_blink_set(struct led_classdev *led_cdev,
 
 	cmd[3] = '0' + err_led->mode;
 
-	return qnap_mcu_exec_with_ack(err_led->mcu, cmd, sizeof(cmd));
+	return qnap_mcu_exec_with_ack(err_led->data->mcu, cmd, sizeof(cmd));
 }
 
-static int qnap_mcu_register_err_led(struct device *dev, struct qnap_mcu *mcu, int num_err_led)
+static int qnap_mcu_register_err_led(struct device *dev, struct qnap_mcu_led_data *data, int num_err_led)
 {
 	struct qnap_mcu_err_led *err_led;
 	int ret;
@@ -83,8 +124,9 @@ static int qnap_mcu_register_err_led(struct device *dev, struct qnap_mcu *mcu, i
 	err_led = devm_kzalloc(dev, sizeof(*err_led), GFP_KERNEL);
 	if (!err_led)
 		return -ENOMEM;
-
-	err_led->mcu = mcu;
+	data->err_leds[data->num_err_leds++]=err_led;
+	
+	err_led->data = data;
 	err_led->num = num_err_led;
 	err_led->mode = QNAP_MCU_ERR_LED_OFF;
 
@@ -102,18 +144,6 @@ static int qnap_mcu_register_err_led(struct device *dev, struct qnap_mcu *mcu, i
 
 	return qnap_mcu_err_led_set(&err_led->cdev, 0);
 }
-
-enum qnap_mcu_usb_led_mode {
-	QNAP_MCU_USB_LED_ON = 1,
-	QNAP_MCU_USB_LED_OFF = 3,
-	QNAP_MCU_USB_LED_BLINK = 2,
-};
-
-struct qnap_mcu_usb_led {
-	struct qnap_mcu *mcu;
-	struct led_classdev cdev;
-	u8 mode;
-};
 
 static inline struct qnap_mcu_usb_led *
 		cdev_to_qnap_mcu_usb_led(struct led_classdev *led_cdev)
@@ -137,9 +167,9 @@ static int qnap_mcu_usb_led_set(struct led_classdev *led_cdev,
 	 * Byte 3 is shared between the usb led target on/off/blink
 	 * and also the buzzer control (in the input driver)
 	 */
-	cmd[2] = 'D' + usb_led->mode;
+	cmd[2] = 'E' + usb_led->mode;
 
-	return qnap_mcu_exec_with_ack(usb_led->mcu, cmd, sizeof(cmd));
+	return qnap_mcu_exec_with_ack(usb_led->data->mcu, cmd, sizeof(cmd));
 }
 
 static int qnap_mcu_usb_led_blink_set(struct led_classdev *led_cdev,
@@ -163,19 +193,19 @@ static int qnap_mcu_usb_led_blink_set(struct led_classdev *led_cdev,
 	 */
 	cmd[2] = 'D' + usb_led->mode;
 
-	return qnap_mcu_exec_with_ack(usb_led->mcu, cmd, sizeof(cmd));
+	return qnap_mcu_exec_with_ack(usb_led->data->mcu, cmd, sizeof(cmd));
 }
 
-static int qnap_mcu_register_usb_led(struct device *dev, struct qnap_mcu *mcu)
+static int qnap_mcu_register_usb_led(struct device *dev, struct qnap_mcu_led_data *data)
 {
-	struct qnap_mcu_usb_led *usb_led;
+	struct qnap_mcu_info_led *usb_led;
 	int ret;
 
 	usb_led = devm_kzalloc(dev, sizeof(*usb_led), GFP_KERNEL);
 	if (!usb_led)
 		return -ENOMEM;
 
-	usb_led->mcu = mcu;
+	usb_led->data = data;
 	usb_led->mode = QNAP_MCU_USB_LED_OFF;
 	usb_led->cdev.name = "usb:blue:disk";
 	usb_led->cdev.brightness_set_blocking = qnap_mcu_usb_led_set;
@@ -190,25 +220,98 @@ static int qnap_mcu_register_usb_led(struct device *dev, struct qnap_mcu *mcu)
 	return qnap_mcu_usb_led_set(&usb_led->cdev, 0);
 }
 
+/* two bits, 0 for green mode, 1 for red mode */
+static const u8 info_mode_to_param[] = {
+  '9', '6',
+  '7', 'D',
+};
+
+static inline struct qnap_mcu_info_led *
+		cdev_to_qnap_mcu_info_led(struct led_classdev *led_cdev)
+{
+	return container_of(led_cdev, struct qnap_mcu_info_led, cdev);
+}
+
+static int qnap_mcu_info_led_set(struct led_classdev *led_cdev,
+				 enum led_brightness brightness)
+{
+	struct qnap_mcu_info_led *info_led = cdev_to_qnap_mcu_info_led(led_cdev);
+	u8 cmd[] = { '@', 'C', 0 };
+	int mode = 0;
+	
+	info_led->mode = brightness ? QNAP_MCU_INFO_LED_ON : QNAP_MCU_INFO_LED_OFF;
+
+	if (info_led->data->info_leds[QNAP_MCU_INFO_LED_GREEN])
+	    mode |= info_led->data->info_leds[QNAP_MCU_INFO_LED_GREEN]->mode;
+	if (info_led->data->info_leds[QNAP_MCU_INFO_LED_RED])
+	    mode |= info_led->data->info_leds[QNAP_MCU_INFO_LED_RED]->mode << 1;
+	cmd[2] = info_mode_to_param[mode];
+
+	return qnap_mcu_exec_with_ack(info_led->data->mcu, cmd, sizeof(cmd));
+}
+
+static int qnap_mcu_register_info_led(struct device *dev, struct qnap_mcu_led_data *data, int num)
+{
+	struct qnap_mcu_info_led *info_led;
+	int ret;
+
+	info_led = devm_kzalloc(dev, sizeof(*info_led), GFP_KERNEL);
+	if (!info_led)
+		return -ENOMEM;
+	data->info_leds[num] = info_led;
+
+	info_led->data = data;
+	info_led->mode = QNAP_MCU_USB_LED_OFF;
+	if (num == QNAP_MCU_INFO_LED_GREEN)
+	  info_led->cdev.name = "sys:green:indicator";
+	else
+	  info_led->cdev.name = "sys:red:indicator";
+	info_led->cdev.brightness_set_blocking = qnap_mcu_info_led_set;
+	info_led->cdev.brightness = 0;
+	info_led->cdev.max_brightness = 1;
+
+	ret = devm_led_classdev_register(dev, &info_led->cdev);
+	if (ret)
+		return ret;
+	
+	return qnap_mcu_info_led_set(&info_led->cdev, 0);
+}
+
 static int qnap_mcu_leds_probe(struct platform_device *pdev)
 {
 	struct qnap_mcu *mcu = dev_get_drvdata(pdev->dev.parent);
 	const struct qnap_mcu_variant *variant = pdev->dev.platform_data;
 	int ret;
 
-	for (int i = 0; i < variant->num_drives; i++) {
-		ret = qnap_mcu_register_err_led(&pdev->dev, mcu, i);
+	struct qnap_mcu_led_data *data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	data->mcu = mcu;
+	
+	for (int i = 0; i < variant->num_sata_drives; i++) {
+		ret = qnap_mcu_register_err_led(&pdev->dev, data, i);
 		if (ret)
 			return dev_err_probe(&pdev->dev, ret,
 					"failed to register error LED %d\n", i);
 	}
 
 	if (variant->usb_led) {
-		ret = qnap_mcu_register_usb_led(&pdev->dev, mcu);
+		ret = qnap_mcu_register_usb_led(&pdev->dev, data);
 		if (ret)
 			return dev_err_probe(&pdev->dev, ret,
 					"failed to register USB LED\n");
 	}
+
+	if (variant->info_led) {
+	  for (int i = 0; i < QNAP_MCU_INFO_LED_COLORS; i++) {
+		        ret = qnap_mcu_register_info_led(&pdev->dev, data, i);
+		        if (ret)
+			        return dev_err_probe(&pdev->dev, ret,
+					             "failed to register info LED %i\n", i);
+	        }
+	}
+	qnap_mcu_info_led_set(&data->info_leds[0]->cdev, 1);
 
 	return 0;
 }

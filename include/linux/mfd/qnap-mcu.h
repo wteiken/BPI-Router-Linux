@@ -7,14 +7,19 @@
 #ifndef _LINUX_QNAP_MCU_H_
 #define _LINUX_QNAP_MCU_H_
 
+#define QNAP_MCU_MAX_SATA_DRIVES  32
+#define QNAP_MCU_MAX_M2_DRIVES    2
+
 struct qnap_mcu;
 
 struct qnap_mcu_variant {
 	u32 baud_rate;
-	int num_drives;
+	int num_sata_drives;
+	int num_fans;
 	int fan_pwm_min;
 	int fan_pwm_max;
 	bool usb_led;
+        bool info_led;
 };
 
 int qnap_mcu_exec(struct qnap_mcu *mcu,

@@ -151,30 +151,35 @@ int qnap_mcu_exec(struct qnap_mcu *mcu,
 
 	mutex_lock(&mcu->bus_lock);
 
-	reply->data = rx,
-	reply->length = length,
-	reply->received = 0,
-	reinit_completion(&reply->done);
+	for (int i = 0; i < 2; i++) {
+	  ret = 0;
 
-	qnap_mcu_write(mcu, cmd_data, cmd_data_size);
+	  reply->data = rx,
+	    reply->received = 0,
+	    reply->length = length,
+	    reinit_completion(&reply->done);
 
-	if (!wait_for_completion_timeout(&reply->done, msecs_to_jiffies(500))) {
-		dev_err(&mcu->serdev->dev, "Command timeout\n");
-		ret = -ETIMEDOUT;
-	} else {
-		u8 crc = qnap_mcu_csum(rx, reply_data_size);
+	  qnap_mcu_write(mcu, cmd_data, cmd_data_size);
 
-		if (crc != rx[reply_data_size]) {
-			dev_err(&mcu->serdev->dev,
-				"Invalid Checksum received\n");
-			ret = -EIO;
-		} else {
-			memcpy(reply_data, rx, reply_data_size);
-		}
+	  if (!wait_for_completion_timeout(&reply->done, msecs_to_jiffies(500))) {
+	    dev_err(&mcu->serdev->dev, "Command timeout\n");
+	    ret = -ETIMEDOUT;
+	  } else {
+	    u8 crc = qnap_mcu_csum(rx, reply_data_size);
+
+	    if (crc != rx[reply_data_size]) {
+	      dev_err(&mcu->serdev->dev,
+		      "Invalid Checksum received\n");
+	      ret = -EIO;
+	    } else {
+	      memcpy(reply_data, rx, reply_data_size);
+	    }
+	  }
 	}
 
 	/* We don't expect any characters from the device now */
 	reply->length = 0;
+	reply->data = NULL;
 
 	mutex_unlock(&mcu->bus_lock);
 	return ret;
@@ -243,10 +248,22 @@ static int qnap_mcu_power_off(struct sys_off_data *data)
 
 static const struct qnap_mcu_variant qnap_ts433_mcu = {
 	.baud_rate = 115200,
-	.num_drives = 4,
+	.num_sata_drives = 4,
+	.num_fans = 1,
 	.fan_pwm_min = 51,  /* Specified in original model.conf */
 	.fan_pwm_max = 255,
 	.usb_led = true,
+	.info_led = false,
+};
+
+static const struct qnap_mcu_variant qnap_ts435xeu_mcu = {
+	.baud_rate = 115200,
+	.num_sata_drives = 4,
+	.num_fans = 3,
+	.fan_pwm_min = 51,  /* Specified in original model.conf */
+	.fan_pwm_max = 255,
+	.usb_led = true,
+	.info_led = true,
 };
 
 static struct mfd_cell qnap_mcu_cells[] = {
@@ -288,6 +305,7 @@ static int qnap_mcu_probe(struct serdev_device *serdev)
 		return dev_err_probe(dev, ret, "Failed to set parity\n");
 
 	ret = qnap_mcu_get_version(mcu);
+	pr_info("MCU version %s", mcu->version);
 	if (ret)
 		return ret;
 
@@ -296,15 +314,15 @@ static int qnap_mcu_probe(struct serdev_device *serdev)
 					    SYS_OFF_PRIO_DEFAULT,
 					    &qnap_mcu_power_off, mcu);
 	if (ret)
-		return dev_err_probe(dev, ret,
-				     "Failed to register poweroff handler\n");
+	    return dev_err_probe(dev, ret,
+				 "Failed to register poweroff handler\n");
 
 	for (int i = 0; i < ARRAY_SIZE(qnap_mcu_cells); i++) {
 		qnap_mcu_cells[i].platform_data = mcu->variant;
 		qnap_mcu_cells[i].pdata_size = sizeof(*mcu->variant);
 	}
 
-	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_AUTO, qnap_mcu_cells,
+	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE, qnap_mcu_cells,
 				   ARRAY_SIZE(qnap_mcu_cells), NULL, 0, NULL);
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to add child devices\n");
@@ -314,6 +332,7 @@ static int qnap_mcu_probe(struct serdev_device *serdev)
 
 static const struct of_device_id qnap_mcu_dt_ids[] = {
 	{ .compatible = "qnap,ts433-mcu", .data = &qnap_ts433_mcu },
+	{ .compatible = "qnap,ts435xeu-mcu", .data = &qnap_ts435xeu_mcu },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, qnap_mcu_dt_ids);
@@ -325,6 +344,7 @@ static struct serdev_device_driver qnap_mcu_drv = {
 		.of_match_table = qnap_mcu_dt_ids,
 	},
 };
+
 module_serdev_device_driver(qnap_mcu_drv);
 
 MODULE_AUTHOR("Heiko Stuebner <heiko@sntech.de>");

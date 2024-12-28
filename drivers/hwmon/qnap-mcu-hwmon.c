@@ -14,25 +14,28 @@
 #include <linux/property.h>
 #include <linux/thermal.h>
 
+#define MAX_NUM_FANS 16
+
 struct qnap_mcu_hwmon {
 	struct qnap_mcu *mcu;
 	struct device *dev;
 
 	unsigned int pwm_min;
 	unsigned int pwm_max;
-
-	struct fwnode_handle *fan_node;
-	unsigned int fan_state;
-	unsigned int fan_max_state;
+        unsigned int num_fans;
+  
+	struct fwnode_handle *pwm_node;
+	unsigned int pwm_state;
+	unsigned int pwm_max_state;
 	unsigned int *fan_cooling_levels;
 
 	struct thermal_cooling_device *cdev;
 	struct hwmon_chip_info info;
 };
 
-static int qnap_mcu_hwmon_get_rpm(struct qnap_mcu_hwmon *hwm)
+static int qnap_mcu_hwmon_get_rpm(struct qnap_mcu_hwmon *hwm, int fan_no)
 {
-	static const u8 cmd[] = { '@', 'F', 'A' };
+	const u8 cmd[] = { '@', 'F', 'A'+fan_no };
 	u8 reply[6];
 	int ret;
 
@@ -45,7 +48,7 @@ static int qnap_mcu_hwmon_get_rpm(struct qnap_mcu_hwmon *hwm)
 	if (memcmp(cmd, reply, 2))
 		return -EIO;
 
-	return reply[4] * 30;
+	return ((reply[3]<<8)|reply[4]) * 30;
 }
 
 static int qnap_mcu_hwmon_get_pwm(struct qnap_mcu_hwmon *hwm)
@@ -80,7 +83,7 @@ static int qnap_mcu_hwmon_get_temp(struct qnap_mcu_hwmon *hwm)
 	u8 reply[4];
 	int ret;
 
-	/* poll the fan rpm */
+	/* poll the sys temp */
 	ret = qnap_mcu_exec(hwm->mcu, cmd, sizeof(cmd), reply, sizeof(reply));
 	if (ret)
 		return ret;
@@ -138,7 +141,9 @@ static int qnap_mcu_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 			return -EOPNOTSUPP;
 		}
 	case hwmon_fan:
-		ret = qnap_mcu_hwmon_get_rpm(hwm);
+                if (channel < 0 || channel >= hwm->num_fans)
+			return -EOPNOTSUPP;
+		ret = qnap_mcu_hwmon_get_rpm(hwm, channel);
 		if (ret < 0)
 			return ret;
 
@@ -190,7 +195,7 @@ static int qnap_mcu_hwmon_get_max_state(struct thermal_cooling_device *cdev,
 	if (!hwm)
 		return -EINVAL;
 
-	*state = hwm->fan_max_state;
+	*state = hwm->pwm_max_state;
 
 	return 0;
 }
@@ -203,7 +208,7 @@ static int qnap_mcu_hwmon_get_cur_state(struct thermal_cooling_device *cdev,
 	if (!hwm)
 		return -EINVAL;
 
-	*state = hwm->fan_state;
+	*state = hwm->pwm_state;
 
 	return 0;
 }
@@ -214,17 +219,17 @@ static int qnap_mcu_hwmon_set_cur_state(struct thermal_cooling_device *cdev,
 	struct qnap_mcu_hwmon *hwm = cdev->devdata;
 	int ret;
 
-	if (!hwm || state > hwm->fan_max_state)
+	if (!hwm || state > hwm->pwm_max_state)
 		return -EINVAL;
 
-	if (state == hwm->fan_state)
+	if (state == hwm->pwm_state)
 		return 0;
 
 	ret = qnap_mcu_hwmon_set_pwm(hwm, hwm->fan_cooling_levels[state]);
 	if (ret)
 		return ret;
 
-	hwm->fan_state = state;
+	hwm->pwm_state = state;
 
 	return ret;
 }
@@ -235,11 +240,11 @@ static const struct thermal_cooling_device_ops qnap_mcu_hwmon_cooling_ops = {
 	.set_cur_state = qnap_mcu_hwmon_set_cur_state,
 };
 
-static void devm_fan_node_release(void *data)
+static void devm_pwm_node_release(void *data)
 {
 	struct qnap_mcu_hwmon *hwm = data;
 
-	fwnode_handle_put(hwm->fan_node);
+	fwnode_handle_put(hwm->pwm_node);
 }
 
 static int qnap_mcu_hwmon_get_cooling_data(struct device *dev, struct qnap_mcu_hwmon *hwm)
@@ -247,13 +252,12 @@ static int qnap_mcu_hwmon_get_cooling_data(struct device *dev, struct qnap_mcu_h
 	struct fwnode_handle *fwnode;
 	int num, i, ret;
 
-	fwnode = device_get_named_child_node(dev->parent, "fan-0");
+	fwnode = device_get_named_child_node(dev->parent, "pwm-0");
 	if (!fwnode)
 		return 0;
-
-	/* if we found the fan-node, we're keeping it until device-unbind */
-	hwm->fan_node = fwnode;
-	ret = devm_add_action_or_reset(dev, devm_fan_node_release, hwm);
+	/* if we found the pwm-node, we're keeping it until device-unbind */
+	hwm->pwm_node = fwnode;
+	ret = devm_add_action_or_reset(dev, devm_pwm_node_release, hwm);
 	if (ret)
 		return ret;
 
@@ -278,14 +282,19 @@ static int qnap_mcu_hwmon_get_cooling_data(struct device *dev, struct qnap_mcu_h
 					     hwm->fan_cooling_levels[i], hwm->pwm_max);
 	}
 
-	hwm->fan_max_state = num - 1;
+	hwm->pwm_max_state = num - 1;
 
 	return 0;
 }
 
+static u32 fan_config[MAX_NUM_FANS + 1];
+static const struct hwmon_channel_info fan_channel_info = {
+	.type = hwmon_fan,
+	.config = fan_config
+};
 static const struct hwmon_channel_info * const qnap_mcu_hwmon_channels[] = {
 	HWMON_CHANNEL_INFO(pwm, HWMON_PWM_INPUT),
-	HWMON_CHANNEL_INFO(fan, HWMON_F_INPUT),
+	&fan_channel_info,
 	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT),
 	NULL
 };
@@ -298,7 +307,7 @@ static int qnap_mcu_hwmon_probe(struct platform_device *pdev)
 	struct thermal_cooling_device *cdev;
 	struct device *dev = &pdev->dev;
 	struct device *hwmon;
-	int ret;
+	int i, ret;
 
 	hwm = devm_kzalloc(dev, sizeof(*hwm), GFP_KERNEL);
 	if (!hwm)
@@ -308,6 +317,12 @@ static int qnap_mcu_hwmon_probe(struct platform_device *pdev)
 	hwm->dev = &pdev->dev;
 	hwm->pwm_min = variant->fan_pwm_min;
 	hwm->pwm_max = variant->fan_pwm_max;
+	hwm->num_fans = variant->num_fans;
+
+	for (i = 0; i < hwm->num_fans; i++) {
+		fan_config[i]=HWMON_F_INPUT;
+	}
+	fan_config[i]=0;
 
 	platform_set_drvdata(pdev, hwm);
 
@@ -325,7 +340,7 @@ static int qnap_mcu_hwmon_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	hwm->fan_state = hwm->fan_max_state;
+	hwm->pwm_state = hwm->pwm_max_state;
 
 	hwmon = devm_hwmon_device_register_with_info(dev, "qnapmcu",
 						     hwm, &hwm->info, NULL);
@@ -339,7 +354,7 @@ static int qnap_mcu_hwmon_probe(struct platform_device *pdev)
 	 */
 	if (IS_ENABLED(CONFIG_THERMAL) && hwm->fan_cooling_levels) {
 		cdev = devm_thermal_of_cooling_device_register(dev,
-					to_of_node(hwm->fan_node), "qnap-mcu-hwmon",
+					to_of_node(hwm->pwm_node), "qnap-mcu-hwmon",
 					hwm, &qnap_mcu_hwmon_cooling_ops);
 		if (IS_ERR(cdev))
 			return dev_err_probe(dev, PTR_ERR(cdev),
