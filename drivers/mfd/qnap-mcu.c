@@ -10,6 +10,7 @@
 #include <linux/export.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/qnap-mcu.h>
+#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/reboot.h>
@@ -17,7 +18,7 @@
 #include <linux/slab.h>
 
 /* The longest command found so far is 5 bytes long */
-#define QNAP_MCU_MAX_CMD_SIZE		5
+#define QNAP_MCU_MAX_CMD_SIZE		12
 #define QNAP_MCU_MAX_DATA_SIZE		36
 #define QNAP_MCU_CHECKSUM_SIZE		1
 
@@ -48,16 +49,20 @@ struct qnap_mcu_reply {
 /**
  * struct qnap_mcu - QNAP NAS embedded controller
  *
- * @serdev:	Pointer to underlying serdev
- * @bus_lock:	Lock to serialize access to the device
- * @reply:	Reply data structure
- * @variant:	Device variant specific information
- * @version:	MCU firmware version
+ * @serdev:	     Pointer to underlying serdev
+ * @bus_lock:	     Lock to serialize access to the device
+ * @reply:	     Reply data structure
+ * misc_device_lock: Lock to prevent multiple misc device opens
+ * misc_device:      Device to send arbitrary commands to MCU
+ * @variant:	     Device variant specific information
+ * @version:	     MCU firmware version
  */
 struct qnap_mcu {
 	struct serdev_device *serdev;
 	struct mutex bus_lock;
 	struct qnap_mcu_reply reply;
+        struct mutex misc_device_lock;
+        struct miscdevice misc_device;
 	const struct qnap_mcu_variant *variant;
 	u8 version[QNAP_MCU_VERSION_LEN];
 };
@@ -82,7 +87,7 @@ static int qnap_mcu_write(struct qnap_mcu *mcu, const u8 *data, u8 data_size)
 	size_t length = data_size + QNAP_MCU_CHECKSUM_SIZE;
 
 	if (length > sizeof(tx)) {
-		dev_err(&mcu->serdev->dev, "data too big for transmit buffer");
+	        dev_err(&mcu->serdev->dev, "data too big for transmit buffer: %lu", length);
 		return -EINVAL;
 	}
 
@@ -145,7 +150,7 @@ int qnap_mcu_exec(struct qnap_mcu *mcu,
 	int ret = 0;
 
 	if (length > sizeof(rx)) {
-		dev_err(&mcu->serdev->dev, "expected data too big for receive buffer");
+	        dev_err(&mcu->serdev->dev, "expected data size %lu too big for receive buffer", length);
 		return -EINVAL;
 	}
 
@@ -162,7 +167,7 @@ int qnap_mcu_exec(struct qnap_mcu *mcu,
 	  qnap_mcu_write(mcu, cmd_data, cmd_data_size);
 
 	  if (!wait_for_completion_timeout(&reply->done, msecs_to_jiffies(500))) {
-	    dev_err(&mcu->serdev->dev, "Command timeout\n");
+	    dev_err(&mcu->serdev->dev, "Command timeout, %lu bytes received\n", reply->received);
 	    ret = -ETIMEDOUT;
 	  } else {
 	    u8 crc = qnap_mcu_csum(rx, reply_data_size);
@@ -246,6 +251,66 @@ static int qnap_mcu_power_off(struct sys_off_data *data)
 	return NOTIFY_DONE;
 }
 
+static int qnap_mcu_misc_device_open(struct inode* inode, struct file* file)
+{
+  struct qnap_mcu* mcu = container_of(file->private_data, struct qnap_mcu, misc_device);
+
+  // Try to lock the miscellaneous device mutex if it's currently unlocked
+  // Note: if the mutex is currently locked it means we are already communicating and this is an
+  //       unexpected communication
+  if (mutex_trylock(&mcu->misc_device_lock) == 0)
+    return -EBUSY;
+
+  return 0;
+}
+
+static int qnap_mcu_misc_device_release(struct inode* inode, struct file* file)
+{
+  struct qnap_mcu* mcu = container_of(file->private_data, struct qnap_mcu, misc_device);
+
+  mutex_unlock(&mcu->misc_device_lock);
+
+  return 0;
+}
+
+static u8 misc_file_buffer[QNAP_MCU_RX_BUFFER_SIZE];
+static int misc_file_len = 0;
+
+static ssize_t qnap_mcu_misc_device_read(struct file* file, char* buffer, size_t size, loff_t* offset)
+{
+  return simple_read_from_buffer(buffer, size, offset, misc_file_buffer, misc_file_len);
+}
+
+static ssize_t qnap_mcu_misc_device_write(struct file* file, const char* buffer, size_t size, loff_t* offset)
+{
+  struct qnap_mcu* mcu = container_of(file->private_data, struct qnap_mcu, misc_device);
+  int ret;
+
+  if (size < 2)
+    return -EAGAIN;
+
+  if (*offset != 0)
+    return -EINVAL;
+
+  if (buffer[0] < 0 || buffer[0] > QNAP_MCU_RX_BUFFER_SIZE)
+    return -EPIPE;
+
+  misc_file_len = 0;
+  ret=qnap_mcu_exec(mcu, buffer+1, size-1, misc_file_buffer, buffer[0]);
+  if (ret != 0)
+    return ret;
+  misc_file_len=buffer[0];
+  return *offset=size;
+}
+
+static const struct file_operations misc_device_file_ops = {
+  .owner = THIS_MODULE,
+  .open = &qnap_mcu_misc_device_open,
+  .read = &qnap_mcu_misc_device_read,
+  .write = &qnap_mcu_misc_device_write,
+  .release = &qnap_mcu_misc_device_release,
+};
+
 static const struct qnap_mcu_variant qnap_ts433_mcu = {
 	.baud_rate = 115200,
 	.num_sata_drives = 4,
@@ -322,6 +387,19 @@ static int qnap_mcu_probe(struct serdev_device *serdev)
 		qnap_mcu_cells[i].pdata_size = sizeof(*mcu->variant);
 	}
 
+
+	// Initialize the miscellaneous device mutex
+	mutex_init(&mcu->misc_device_lock);
+
+	// Populate various miscellaneous device structure fields
+	mcu->misc_device.name = "qnap-mcu";
+	mcu->misc_device.minor = MISC_DYNAMIC_MINOR;
+	mcu->misc_device.fops = &misc_device_file_ops;
+
+	ret = misc_register(&mcu->misc_device);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to register misc device\n");
+
 	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE, qnap_mcu_cells,
 				   ARRAY_SIZE(qnap_mcu_cells), NULL, 0, NULL);
 	if (ret)
@@ -330,15 +408,24 @@ static int qnap_mcu_probe(struct serdev_device *serdev)
 	return 0;
 }
 
+static void qnap_mcu_remove(struct serdev_device *serdev)
+{
+  struct device *dev = &serdev->dev;
+  struct qnap_mcu *mcu = dev_get_drvdata(dev);
+  misc_deregister(&mcu->misc_device);
+}
+
 static const struct of_device_id qnap_mcu_dt_ids[] = {
 	{ .compatible = "qnap,ts433-mcu", .data = &qnap_ts433_mcu },
 	{ .compatible = "qnap,ts435xeu-mcu", .data = &qnap_ts435xeu_mcu },
 	{ /* sentinel */ }
 };
+
 MODULE_DEVICE_TABLE(of, qnap_mcu_dt_ids);
 
 static struct serdev_device_driver qnap_mcu_drv = {
 	.probe = qnap_mcu_probe,
+	.remove = qnap_mcu_remove,
 	.driver = {
 		.name = "qnap-mcu",
 		.of_match_table = qnap_mcu_dt_ids,
