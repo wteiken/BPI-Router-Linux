@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/bitfield.h>
+#include <linux/netdevice.h>
 #include <linux/phy.h>
 
 #include "aquantia.h"
@@ -788,6 +789,147 @@ static int aqr107_probe(struct phy_device *phydev)
 }
 
 
+static int aqr112c_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
+{
+	struct net_device *ndev = phydev->attached_dev;
+	int reg = 0;
+	u32 phy_id = 0;
+	u8 mac[6] = {0};
+	u16 data;
+	int err = 0;
+	int i = 0;
+
+	if (!ndev)
+		return 0;
+
+	memcpy(mac, ndev->dev_addr, sizeof(mac));
+
+	reg = phy_read_mmd(phydev, 0x3, 0x2);
+	phy_id = reg << 16;
+	reg = phy_read_mmd(phydev, 0x3, 0x3);
+	phy_id |= reg;
+	netdev_dbg(ndev, "phy_id = 0x%x", phy_id);
+
+	netdev_dbg(ndev, "WoL on MAC = %02x:%02x:%02x:%02x:%02x:%02x",  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+
+	if (wol->supported == (WAKE_MAGIC | WAKE_MAGICSECURE))
+	{
+		data = mac[0] | mac[1]<<8;
+		err = phy_write_mmd(phydev, 0x1d, 0xc339, data);
+		if (err < 0)
+			return err;
+
+		data = mac[2] | mac[3]<<8;
+		err = phy_write_mmd(phydev, 0x1d, 0xc33a, data);
+		if (err < 0)
+			return err;
+
+		data = mac[4] | mac[5]<<8;
+		err = phy_write_mmd(phydev, 0x1d, 0xc33b, data);
+		if (err < 0)
+			return err;
+
+		err = phy_write_mmd(phydev, 0x7, 0x20, 0x1);
+		if (err < 0)
+			return err;
+
+		reg = phy_read_mmd(phydev, 0x7, 0xc400);
+		if (reg < 0)
+			return reg;
+		data = 0x9000 | (u16)(reg & 0xff);
+		err = phy_write_mmd(phydev, 0x7, 0xc400, data);
+		if (err < 0)
+			return err;
+
+		err = phy_write_mmd(phydev, 0x1d, 0xc355, 0x1);
+		if (err < 0)
+			return err;
+
+		err = phy_write_mmd(phydev, 0x1d, 0xc356, 0x1);
+		if (err < 0)
+			return err;
+
+		reg = phy_read_mmd(phydev, 0x7, 0xc410);
+		if (reg < 0)
+			return reg;
+		data = (0x1 << 6) | (u16)reg;
+		err = phy_write_mmd(phydev, 0x7, 0xc410, data);
+		if (err < 0)
+			return err;
+
+		reg = phy_read_mmd(phydev, 0x1d, 0xc357);
+		if (reg < 0)
+			return reg;
+		data = (0x1 << 15) | (u16)reg;
+		err = phy_write_mmd(phydev, 0x1d, 0xc357, data);
+		if (err < 0)
+			return err;
+
+		reg = phy_read_mmd(phydev, 0x1d, 0xf420);
+		if (reg < 0)
+			return reg;
+		data = (0x3 << 4) | (u16)reg;
+		err = phy_write_mmd(phydev, 0x1d, 0xf420, data);
+		if (err < 0)
+			return err;
+
+		reg = phy_read_mmd(phydev, 0x1e, 0xff00);
+		if (reg < 0)
+			return reg;
+		data = 0x1 | (u16)reg;
+		err = phy_write_mmd(phydev, 0x1e, 0xff00, data);
+		if (err < 0)
+			return err;
+
+		reg = phy_read_mmd(phydev, 0x1e, 0xff01);
+		if (reg < 0)
+			return reg;
+		data = (0x1 << 0xb) | (u16)reg;
+		err = phy_write_mmd(phydev, 0x1e, 0xff01, data);
+		if (err < 0)
+			return err;
+
+		err = phy_write_mmd(phydev, 0x1e, 0x31b, 0xb);
+		if (err < 0)
+			return err;
+
+		err = phy_write_mmd(phydev, 0x1e, 0x31c, 0xb);
+		if (err < 0)
+			return err;
+
+		reg = phy_read_mmd(phydev, 0x7, 0x0);
+		if (reg < 0)
+			return reg;
+		data = (0x1 << 0x9) | (u16)reg;
+		err = phy_write_mmd(phydev, 0x7, 0x0, data);
+		if (err < 0)
+			return err;
+
+		for (i = 0; i < 6; i++)
+		{   // it takes a lot time to change the speed from other speed to 1 G for wol ready
+			msleep(1000);
+			reg = phy_read_mmd(phydev, 0x7, 0xc812);
+			if (reg < 0)
+				return reg;
+
+			if (reg & 0x1)
+				break;
+		}
+
+		if (reg & 0x1)
+			netdev_dbg(ndev, "wol enabled (wait %d s)", i + 1);
+		else
+			netdev_dbg(ndev, "wol disabled (wait %d s)", i + 1);
+	}
+
+	return 0;
+}
+
+static void aqr112c_get_wol(struct phy_device *dev, struct ethtool_wolinfo *wol)
+{
+}
+
 static struct phy_driver aqr_driver[] = {
 {
 	PHY_ID_MATCH_MODEL(PHY_ID_AQ1202),
@@ -960,6 +1102,8 @@ static struct phy_driver aqr_driver[] = {
         .config_intr    = aqr_config_intr,
 	.handle_interrupt = aqr_handle_interrupt,
         .read_status    = aqr_read_status,
+	.set_wol        = aqr112c_set_wol,
+	.get_wol        = aqr112c_get_wol,
 },
 {
 	PHY_ID_MATCH_MODEL(PHY_ID_AQR412),

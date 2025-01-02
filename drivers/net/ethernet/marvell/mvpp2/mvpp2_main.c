@@ -43,6 +43,8 @@
 #include "mvpp2_prs.h"
 #include "mvpp2_cls.h"
 
+#define WOL_PATCH 1
+
 enum mvpp2_bm_pool_log_num {
 	MVPP2_BM_SHORT,
 	MVPP2_BM_LONG,
@@ -5770,6 +5772,41 @@ static int mvpp2_ethtool_set_rxfh(struct net_device *dev,
 	return mvpp2_modify_rxfh_context(dev, NULL, rxfh, extack);
 }
 
+#if defined(WOL_PATCH)
+static int mcu_wol_enable = 0;
+static int mvpp2_set_wol(struct net_device *ndev, struct ethtool_wolinfo *wolinfo)
+{
+	int rc = -1;
+
+	if (ndev->phydev && ndev->phydev->drv && ndev->phydev->drv->set_wol)
+	{
+		mcu_wol_enable = wolinfo->wolopts & WAKE_MAGIC ? 1 : 0;;
+		rc = ndev->phydev->drv->set_wol(ndev->phydev, wolinfo);
+	}
+
+	return rc;
+}
+
+static void mvpp2_get_wol(struct net_device *ndev, struct ethtool_wolinfo *wolinfo)
+{
+  netdev_info(ndev, "in get_wol %p %p %p", ndev->phydev, ndev->phydev ? ndev->phydev->drv : NULL, ndev->phydev&&ndev->phydev->drv ? ndev->phydev->drv->get_wol : NULL);
+	if (ndev->phydev && ndev->phydev->drv && ndev->phydev->drv->get_wol)
+	{
+	        netdev_info(ndev, "in get_wol2");
+		if (!mcu_wol_enable)
+		{
+			wolinfo->supported |= WAKE_MAGIC;
+			wolinfo->wolopts &= ~WAKE_MAGIC;
+		}
+		else
+		{
+			wolinfo->supported |= WAKE_MAGIC;
+			wolinfo->wolopts |= WAKE_MAGIC;
+		}
+	}
+}
+#endif
+
 /* Device ops */
 
 static const struct net_device_ops mvpp2_netdev_ops = {
@@ -5815,6 +5852,10 @@ static const struct ethtool_ops mvpp2_eth_tool_ops = {
 	.create_rxfh_context	= mvpp2_create_rxfh_context,
 	.modify_rxfh_context	= mvpp2_modify_rxfh_context,
 	.remove_rxfh_context	= mvpp2_remove_rxfh_context,
+#if defined(WOL_PATCH)
+	.set_wol    = mvpp2_set_wol,
+	.get_wol    = mvpp2_get_wol,
+#endif
 };
 
 /* Used for PPv2.1, or PPv2.2 with the old Device Tree binding that
@@ -7751,6 +7792,52 @@ static void mvpp2_remove(struct platform_device *pdev)
 	clk_disable_unprepare(priv->gop_clk);
 }
 
+#ifdef WOL_PATCH
+static void mvpp2_shutdown(struct platform_device *pdev)
+{
+	struct mvpp2 *priv;
+	struct mvpp2_port *port;
+	struct net_device *dev;
+	struct ethtool_wolinfo wol;
+	int i;
+	int rc;
+
+	priv = (struct mvpp2*)platform_get_drvdata(pdev);
+	pr_info("priv_data %p\n", priv);
+	if (!priv)
+		goto shutdown_err;
+
+	for (i = 0; i < priv->port_count; i++)
+	{
+		if (!priv->port_list[i])
+			continue;
+
+		port = priv->port_list[i];
+		if (!port->phylink)
+			continue;
+
+		if (!port->dev)
+			continue;
+
+		dev = port->dev;
+		netdev_info(dev, "mac address %pM\n", dev->dev_addr);
+
+		if (!dev->phydev)
+			continue;
+
+		if (mcu_wol_enable)
+		{
+			wol.supported = (WAKE_MAGIC | WAKE_MAGICSECURE);
+			wol.wolopts = WAKE_MAGIC;
+			rc = phy_ethtool_set_wol(dev->phydev, &wol);
+		}
+	}
+
+	shutdown_err:
+	return ;
+}
+#endif
+
 static const struct of_device_id mvpp2_match[] = {
 	{
 		.compatible = "marvell,armada-375-pp2",
@@ -7775,6 +7862,9 @@ MODULE_DEVICE_TABLE(acpi, mvpp2_acpi_match);
 static struct platform_driver mvpp2_driver = {
 	.probe = mvpp2_probe,
 	.remove_new = mvpp2_remove,
+#if defined(WOL_PATCH)
+	.shutdown = mvpp2_shutdown,
+#endif
 	.driver = {
 		.name = MVPP2_DRIVER_NAME,
 		.of_match_table = mvpp2_match,
