@@ -26,6 +26,7 @@
 #define PHY_ID_AQR111B0	0x03a1b612
 #define PHY_ID_AQR112	0x03a1b662
 #define PHY_ID_AQR412	0x03a1b712
+#define PHY_ID_AQR112C  0x03a1b792
 #define PHY_ID_AQR113	0x31c31c40
 #define PHY_ID_AQR113C	0x31c31c12
 #define PHY_ID_AQR114C	0x31c31c22
@@ -951,6 +952,14 @@ static struct phy_driver aqr_driver[] = {
 	.led_hw_control_set = aqr_phy_led_hw_control_set,
 	.led_hw_control_get = aqr_phy_led_hw_control_get,
 	.led_polarity_set = aqr_phy_led_polarity_set,
+},
+{
+        PHY_ID_MATCH_MODEL(PHY_ID_AQR112C),
+        .name           = "Aquantia AQR112C",
+        .config_aneg    = aqr_config_aneg,
+        .config_intr    = aqr_config_intr,
+	.handle_interrupt = aqr_handle_interrupt,
+        .read_status    = aqr_read_status,
 },
 {
 	PHY_ID_MATCH_MODEL(PHY_ID_AQR412),
