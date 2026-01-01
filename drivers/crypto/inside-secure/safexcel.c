@@ -414,19 +414,20 @@ static int eip197_load_firmwares(struct safexcel_crypto_priv *priv)
 	const struct firmware *fw[FW_NB];
 	char fw_path[37], *dir = NULL;
 	int i, j, ret = 0, pe;
-	int ipuesz, ifppsz, minifw = 1;
+	int ipuesz, ifppsz, minifw = 0;
 
 	if (priv->data->version == EIP197D_MRVL)
 		dir = "eip197d";
 	else if (priv->data->version == EIP197B_MRVL ||
 		 priv->data->version == EIP197_DEVBRD)
-		dir = "eip197_minifw";
+		dir = "eip197b";
 	else if (priv->data->version == EIP197C_MXL)
 		dir = "eip197c";
 	else
 		return -ENODEV;
 
 retry_fw:
+	dev_info(priv->dev, "try fw load: %s\n", dir);
 	for (i = 0; i < FW_NB; i++) {
 		snprintf(fw_path, 37, "inside-secure/%s/%s", dir, fw_name[i]);
 		ret = firmware_request_nowarn(&fw[i], fw_path, priv->dev);
@@ -454,9 +455,6 @@ retry_fw:
 		       EIP197_PE(priv) + EIP197_PE_ICE_RAM_CTRL(pe));
 
 	ipuesz = eip197_write_firmware(priv, fw[FW_IPUE]);
-
-	for (j = 0; j < i; j++)
-		release_firmware(fw[j]);
 
 	if (eip197_start_firmware(priv, ipuesz, ifppsz, minifw)) {
 		dev_dbg(priv->dev, "Firmware loaded successfully\n");
