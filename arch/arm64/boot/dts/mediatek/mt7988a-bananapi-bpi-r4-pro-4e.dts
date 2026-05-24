@@ -36,5 +36,5 @@
 
 &gsw_port2 {
         status = "okay";
-	label = "lan4";
+	label = "lan6";
 };
