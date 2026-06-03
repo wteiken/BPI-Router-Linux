@@ -2006,7 +2006,7 @@ static struct page_pool *mtk_create_page_pool(struct mtk_eth *eth,
 	err = xdp_rxq_info_reg_mem_model(xdp_q, MEM_TYPE_PAGE_POOL, pp);
 	if (err)
 		goto err_unregister_rxq;
-
+	dev_info(eth->dev, "Allocated page pool %d (%p)\n", pp->user.id, pp);
 	return pp;
 
 err_unregister_rxq:
@@ -3059,6 +3059,8 @@ static void mtk_rx_clean(struct mtk_eth *eth, struct mtk_rx_ring *ring, bool in_
 	if (ring->page_pool) {
 		if (xdp_rxq_info_is_reg(&ring->xdp_q))
 			xdp_rxq_info_unreg(&ring->xdp_q);
+		dev_info(eth->dev, "Destroy page pool %d (%p)\n",
+                         ring->page_pool->user.id, ring->page_pool);
 		page_pool_destroy(ring->page_pool);
 		ring->page_pool = NULL;
 	}
