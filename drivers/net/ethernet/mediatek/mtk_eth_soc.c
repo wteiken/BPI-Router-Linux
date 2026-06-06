@@ -2374,11 +2374,25 @@ static int mtk_poll_rx(struct napi_struct *napi, int budget,
 			xdp_buff_clear_frags_flag(&xdp);
 
 			ret = mtk_xdp_run(eth, ring, &xdp, netdev);
-			if (ret == XDP_REDIRECT)
+			switch (ret) {
+			case XDP_REDIRECT:
 				xdp_flush = true;
-
-			if (ret != XDP_PASS)
+			case XDP_PASS:
+				break;
+			case XDP_TX:
 				goto skip_rx;
+			default:
+				dev_warn(eth->dev, "Unexpected XDP code %u\n",
+						ret);
+				fallthrough;
+			case XDP_ABORTED:
+			case XDP_DROP:
+				dev_warn(eth->dev, "Rare? XDP code %u\n", ret);
+				page_pool_put_full_page(ring->page_pool,
+							page, true);
+				netdev->stats.rx_dropped++;
+				goto skip_rx;
+			}
 
 			skb = build_skb(data, ring->page_pool_size);
 			if (unlikely(!skb)) {
