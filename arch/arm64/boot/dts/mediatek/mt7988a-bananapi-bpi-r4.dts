@@ -37,3 +37,8 @@
 		reg = <2>;
 	};
 };
+
+/* Currently causes issues with ifdown */
+&crypto {
+	status = "disabled";
+};
