@@ -6371,7 +6371,7 @@ static int mtk_probe(struct platform_device *pdev)
 		}
 	}
 
-	eth->rx_buf_len = MTK_MAX_RX_LENGTH;
+	eth->rx_buf_len = MTK_MAX_RX_LENGTH_9K;
 
 	platform_set_drvdata(pdev, eth);
 	schedule_delayed_work(&eth->reset.monitor_work,
