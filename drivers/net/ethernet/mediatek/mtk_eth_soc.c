@@ -3127,8 +3127,13 @@ static int mtk_hwlro_rx_init(struct mtk_eth *eth)
 
 	if (mtk_is_netsys_v3_or_greater(eth)) {
 		val = mtk_r32(eth, reg_map->pdma.rx_cfg);
-		mtk_w32(eth, val | ((MTK_PDMA_LRO_SDL + eth->rx_buf_len) <<
-			MTK_RX_CFG_SDL_OFFSET), reg_map->pdma.rx_cfg);
+		dev_info(eth->dev, "rx_cfg val old: %x\n", val);
+		val &= ((1 << MTK_RX_CFG_SDL_OFFSET) - 1);
+		dev_info(eth->dev, "rx_cfg val processes: %x\n", val);
+		val |= ((MTK_PDMA_LRO_SDL + eth->rx_buf_len) <<
+                        MTK_RX_CFG_SDL_OFFSET);
+		dev_info(eth->dev, "rx_cfg val final: %x\n", val);
+		mtk_w32(eth, val, reg_map->pdma.rx_cfg);
 
 		lro_ctrl_dw0 |= MTK_PDMA_LRO_SDL << MTK_CTRL_DW0_SDL_OFFSET;
 
