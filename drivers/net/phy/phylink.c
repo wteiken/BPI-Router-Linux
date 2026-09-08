@@ -1055,7 +1055,7 @@ static unsigned int phylink_inband_caps(struct phylink *pl,
 	if (pl->mac_ops->mac_select_pcs) {
 		pcs = pl->mac_ops->mac_select_pcs(pl->config,
 						  interface);
-		pcs_found = !!pcs;
+		pcs_found = !IS_ERR_OR_NULL(pcs);
 	} else {
 		list_for_each_entry(pcs, &pl->pcs_list, list) {
 			if (!phylink_validate_pcs_interface(pcs, interface)) {
